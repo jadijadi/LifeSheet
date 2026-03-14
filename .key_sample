@@ -1,7 +1,8 @@
+# Required: Telegram bot token from @BotFather
 export TELEGRAM_BOT_TOKEN=""
-export TELEGRAM_USER_ID=""
-export TELEGRAM_CHAT_ID=""
 
+# Required: PostgreSQL connection string
 export DATABASE_URL=""
 
+# Optional: URL to load lifesheet.json from (if not set, uses local lifesheet.json)
 export LIFESHEET_JSON_URL=""

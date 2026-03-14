@@ -12,10 +12,49 @@ import { Command, QuestionToAsk } from "./classes/config.js";
 
 let bot = telegram.bot;
 
-// State
-var currentlyAskedQuestionObject: QuestionToAsk = null;
-var currentlyAskedQuestionMessageId: String = null; // The Telegram message ID reference
-let currentlyAskedQuestionQueue: Array<QuestionToAsk> = []; // keep track of all the questions about to be asked
+// Per-user conversation state (multi-user)
+interface UserState {
+  currentlyAskedQuestionObject: QuestionToAsk | null;
+  currentlyAskedQuestionMessageId: number | null;
+  currentlyAskedQuestionQueue: QuestionToAsk[];
+}
+
+const userState = new Map<number, UserState>();
+
+function getState(ctx: any): UserState {
+  const userId = ctx.update?.message?.from?.id ?? ctx.from?.id;
+  if (!userId) throw new Error("No user id in context");
+  let state = userState.get(userId);
+  if (!state) {
+    state = {
+      currentlyAskedQuestionObject: null,
+      currentlyAskedQuestionMessageId: null,
+      currentlyAskedQuestionQueue: []
+    };
+    userState.set(userId, state);
+  }
+  return state;
+}
+
+function ensureUserRegistered(ctx: any): void {
+  const from = ctx.update?.message?.from ?? ctx.from;
+  if (!from) return;
+  const userId = from.id;
+  const chatId = ctx.update?.message?.chat?.id ?? ctx.chat?.id;
+  if (chatId == null) return;
+  const username = from.username ?? null;
+  postgres.client.query(
+    {
+      text:
+        "INSERT INTO users (user_id, chat_id, username, updated_at) VALUES ($1, $2, $3, NOW()) " +
+        "ON CONFLICT (user_id) DO UPDATE SET chat_id = $2, username = $3, updated_at = NOW()",
+      values: [userId, chatId, username]
+    },
+    (err: Error) => {
+      if (err) console.error("ensureUserRegistered", err);
+    }
+  );
+}
 
 initBot();
 
@@ -25,7 +64,7 @@ function roundNumberExactly(number, decimals) {
   ).toFixed(decimals);
 }
 
-function getButtonText(number) {
+function getButtonText(number: string, questionObject: QuestionToAsk): string {
   let emojiNumber = {
     "0": "0️⃣",
     "1": "1️⃣",
@@ -35,9 +74,8 @@ function getButtonText(number) {
     "5": "5️⃣"
   }[number];
 
-  if (currentlyAskedQuestionObject.buttons == null) {
-    // Assign default values
-    currentlyAskedQuestionObject.buttons = {
+  if (questionObject.buttons == null) {
+    questionObject.buttons = {
       "0": "Terrible",
       "1": "Bad",
       "2": "Okay",
@@ -47,21 +85,24 @@ function getButtonText(number) {
     };
   }
 
-  return emojiNumber + " " + currentlyAskedQuestionObject.buttons[number];
+  return emojiNumber + " " + questionObject.buttons[number];
 }
 
 function printGraph(
-  key,
-  ctx,
-  numberOfRecentValuesToPrint,
-  additionalValue,
-  skipImage
+  key: string,
+  ctx: any,
+  numberOfRecentValuesToPrint: number,
+  additionalValue: any,
+  skipImage: boolean
 ) {
+  const userId = ctx.update?.message?.from?.id ?? ctx.from?.id;
+  if (!userId) return;
+
   postgres.client.query(
     {
       text:
-        "SELECT * FROM raw_data WHERE key = $1 ORDER BY timestamp DESC LIMIT 300",
-      values: [key]
+        "SELECT * FROM raw_data WHERE user_id = $1 AND key = $2 ORDER BY timestamp DESC LIMIT 300",
+      values: [userId, key]
     },
     (err, res) => {
       if (err) {
@@ -161,19 +202,19 @@ function printGraph(
         if (key == "mood") {
           athTimestamp = moment("2018-02-01").unix() * 1000;
         }
-        // After values
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > ${weekTimestamp} AND key='${key}') as ${key}Week,`;
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > ${monthTimestamp} AND key='${key}') as ${key}Month,`;
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > ${quarterTimestamp} AND key='${key}') as ${key}Quarter,`;
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > ${yearTimestamp} AND key='${key}') as ${key}Year,`;
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > ${athTimestamp} AND key='${key}') as ${key}AllTime,`;
+        // After values (all scoped to user_id)
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND timestamp > ${weekTimestamp} AND key='${key}') as ${key}Week,`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND timestamp > ${monthTimestamp} AND key='${key}') as ${key}Month,`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND timestamp > ${quarterTimestamp} AND key='${key}') as ${key}Quarter,`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND timestamp > ${yearTimestamp} AND key='${key}') as ${key}Year,`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND timestamp > ${athTimestamp} AND key='${key}') as ${key}AllTime,`;
 
         // Before values
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE id != (SELECT id FROM raw_data WHERE key='${key}' ORDER BY id DESC LIMIT 1) AND timestamp > ${weekTimestamp} AND key='${key}') as ${key}WeekOld,`;
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE id != (SELECT id FROM raw_data WHERE key='${key}' ORDER BY id DESC LIMIT 1) AND timestamp > ${monthTimestamp} AND key='${key}') as ${key}MonthOld,`;
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE id != (SELECT id FROM raw_data WHERE key='${key}' ORDER BY id DESC LIMIT 1) AND timestamp > ${quarterTimestamp} AND key='${key}') as ${key}QuarterOld,`;
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE id != (SELECT id FROM raw_data WHERE key='${key}' ORDER BY id DESC LIMIT 1) AND timestamp > ${yearTimestamp} AND key='${key}') as ${key}YearOld,`;
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE id != (SELECT id FROM raw_data WHERE key='${key}' ORDER BY id DESC LIMIT 1) AND timestamp > ${athTimestamp} AND key='${key}') as ${key}AllTimeOld,`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND id != (SELECT id FROM raw_data WHERE user_id = ${userId} AND key='${key}' ORDER BY id DESC LIMIT 1) AND timestamp > ${weekTimestamp} AND key='${key}') as ${key}WeekOld,`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND id != (SELECT id FROM raw_data WHERE user_id = ${userId} AND key='${key}' ORDER BY id DESC LIMIT 1) AND timestamp > ${monthTimestamp} AND key='${key}') as ${key}MonthOld,`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND id != (SELECT id FROM raw_data WHERE user_id = ${userId} AND key='${key}' ORDER BY id DESC LIMIT 1) AND timestamp > ${quarterTimestamp} AND key='${key}') as ${key}QuarterOld,`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND id != (SELECT id FROM raw_data WHERE user_id = ${userId} AND key='${key}' ORDER BY id DESC LIMIT 1) AND timestamp > ${yearTimestamp} AND key='${key}') as ${key}YearOld,`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND id != (SELECT id FROM raw_data WHERE user_id = ${userId} AND key='${key}' ORDER BY id DESC LIMIT 1) AND timestamp > ${athTimestamp} AND key='${key}') as ${key}AllTimeOld,`;
 
         // Previous Year values
         let previousYearStart =
@@ -184,8 +225,8 @@ function printGraph(
           moment()
             .subtract(365, "days")
             .unix() * 1000;
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > ${previousYearStart} AND timestamp < ${previousYearEnd} AND key='${key}') as ${key}PreviousYear,`;
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp < ${previousYearEnd} AND key='${key}') as ${key}BeforeLastYear,`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND timestamp > ${previousYearStart} AND timestamp < ${previousYearEnd} AND key='${key}') as ${key}PreviousYear,`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND timestamp < ${previousYearEnd} AND key='${key}') as ${key}BeforeLastYear,`;
 
         let previousQuarterStart =
           moment()
@@ -195,7 +236,7 @@ function printGraph(
           moment()
             .subtract(90, "days")
             .unix() * 1000;
-        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > ${previousQuarterStart} AND timestamp < ${previousQuarterEnd} AND key='${key}') as ${key}PreviousQuarter`;
+        queryToUse += `(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = ${userId} AND timestamp > ${previousQuarterStart} AND timestamp < ${previousQuarterEnd} AND key='${key}') as ${key}PreviousQuarter`;
 
         console.log(queryToUse);
 
@@ -263,59 +304,54 @@ function printGraph(
   );
 }
 
-function triggerNextQuestionFromQueue(ctx) {
+function triggerNextQuestionFromQueue(ctx: any) {
+  const state = getState(ctx);
   let keyboard = Extra.markup(m => m.removeKeyboard()); // default keyboard
   let questionAppendix = "";
 
-  currentlyAskedQuestionObject = currentlyAskedQuestionQueue.shift();
+  state.currentlyAskedQuestionObject = state.currentlyAskedQuestionQueue.shift();
 
-  if (currentlyAskedQuestionObject == null) {
+  if (state.currentlyAskedQuestionObject == null) {
     ctx.reply("All done for now, let's do this 💪", keyboard);
-    // Finished
     return;
   }
 
-  if (currentlyAskedQuestionObject.question == null) {
+  const currentQuestion = state.currentlyAskedQuestionObject;
+  if (currentQuestion.question == null) {
     console.error("No text defined for");
-    console.error(currentlyAskedQuestionObject);
+    console.error(currentQuestion);
   }
 
-  if (currentlyAskedQuestionObject.type == "header") {
-    // This is information only, just print and go to the next one
+  if (currentQuestion.type == "header") {
     ctx
-      .reply(currentlyAskedQuestionObject.question, keyboard)
-      .then(({ message_id }) => {
+      .reply(currentQuestion.question, keyboard)
+      .then(() => {
         triggerNextQuestionFromQueue(ctx);
       });
     return;
   }
 
-  // Looks like Telegram has some limitations:
-  // - No way to use `force_reply` together with a custom keyboard (https://github.com/KrauseFx/FxLifeSheet/issues/5)
-  // - No way to update existing messages together with a custom keyboard https://core.telegram.org/bots/api#updating-messages
-
-  if (currentlyAskedQuestionObject.type == "range") {
+  if (currentQuestion.type == "range") {
     let allButtons = [
-      [getButtonText("5")],
-      [getButtonText("4")],
-      [getButtonText("3")],
-      [getButtonText("2")],
-      [getButtonText("1")],
-      [getButtonText("0")]
+      [getButtonText("5", currentQuestion)],
+      [getButtonText("4", currentQuestion)],
+      [getButtonText("3", currentQuestion)],
+      [getButtonText("2", currentQuestion)],
+      [getButtonText("1", currentQuestion)],
+      [getButtonText("0", currentQuestion)]
     ];
     shuffleArray(allButtons);
     keyboard = Markup.keyboard(allButtons)
       .oneTime()
       .extra();
-  } else if (currentlyAskedQuestionObject.type == "boolean") {
+  } else if (currentQuestion.type == "boolean") {
     keyboard = Markup.keyboard([["1: Yes"], ["0: No"]])
       .oneTime()
       .extra();
-  } else if (currentlyAskedQuestionObject.type == "text") {
-    // use the default keyboard we set here anyway
+  } else if (currentQuestion.type == "text") {
     questionAppendix +=
       "You can use a Bear note, and then paste the deep link to the note here";
-  } else if (currentlyAskedQuestionObject.type == "location") {
+  } else if (currentQuestion.type == "location") {
     keyboard = Extra.markup(markup => {
       return markup.keyboard([
         markup.locationRequestButton("📡 Send location")
@@ -323,28 +359,27 @@ function triggerNextQuestionFromQueue(ctx) {
     });
   }
 
-  questionAppendix = currentlyAskedQuestionQueue.length + " more question";
-  if (currentlyAskedQuestionQueue.length != 1) {
+  questionAppendix = state.currentlyAskedQuestionQueue.length + " more question";
+  if (state.currentlyAskedQuestionQueue.length != 1) {
     questionAppendix += "s";
   }
-  if (currentlyAskedQuestionQueue.length == 0) {
+  if (state.currentlyAskedQuestionQueue.length == 0) {
     questionAppendix = "last question";
   }
 
   let question =
-    currentlyAskedQuestionObject.question + " (" + questionAppendix + ")";
+    currentQuestion.question + " (" + questionAppendix + ")";
 
-  ctx.reply(question, keyboard).then(({ message_id }) => {
-    currentlyAskedQuestionMessageId = message_id;
+  ctx.reply(question, keyboard).then(({ message_id }: { message_id: number }) => {
+    state.currentlyAskedQuestionMessageId = message_id;
   });
 
   if (
-    currentlyAskedQuestionObject.type == "number" ||
-    currentlyAskedQuestionObject.type == "range" ||
-    currentlyAskedQuestionObject.type == "boolean"
+    currentQuestion.type == "number" ||
+    currentQuestion.type == "range" ||
+    currentQuestion.type == "boolean"
   ) {
-    // To show the graph before, as it takes a while to load
-    printGraph(currentlyAskedQuestionObject.key, ctx, 0, null, false);
+    printGraph(currentQuestion.key, ctx, 0, null, false);
   }
 }
 
@@ -356,8 +391,11 @@ function shuffleArray(array) {
   }
 }
 
-function insertNewValue(parsedUserValue, ctx, key, type, fakeDate = null) {
+function insertNewValue(parsedUserValue: any, ctx: any, key: string, type: string, fakeDate: any = null) {
   console.log("Inserting value '" + parsedUserValue + "' for key " + key);
+
+  const userId = ctx.update?.message?.from?.id ?? ctx.from?.id;
+  if (!userId) return;
 
   let dateToAdd;
   if (fakeDate) {
@@ -365,37 +403,44 @@ function insertNewValue(parsedUserValue, ctx, key, type, fakeDate = null) {
   } else {
     dateToAdd = moment(ctx.update.message.date * 1000);
   }
-  let questionText = null;
-  if (currentlyAskedQuestionObject) {
-    questionText = currentlyAskedQuestionObject.question;
+  const state = getState(ctx);
+  let questionText: string | null = null;
+  if (state.currentlyAskedQuestionObject) {
+    questionText = state.currentlyAskedQuestionObject.question;
   }
 
-  let row = {
-    Timestamp: dateToAdd.valueOf(),
-    YearMonth: dateToAdd.format("YYYYMM"),
-    YearWeek: dateToAdd.format("YYYYWW"), // TODO: verify Monday/Sunday week start
-    Year: dateToAdd.year(),
-    Quarter: dateToAdd.quarter(),
-    Month: dateToAdd.format("MM"), // to get the leading 0 needed for Google Data Studio
-    Day: dateToAdd.date(),
-    Hour: dateToAdd.hours(),
-    Minute: dateToAdd.minutes(),
-    Week: dateToAdd.week(),
-    Key: key,
-    Question: questionText,
-    Type: type,
-    Value: parsedUserValue,
-    Source: "telegram",
-    Importedat: moment(ctx.update.message.date * 1000),
-    Importid: null
+  const row = {
+    user_id: userId,
+    timestamp: dateToAdd.valueOf(),
+    yearmonth: dateToAdd.format("YYYYMM"),
+    yearweek: dateToAdd.format("YYYYWW"),
+    year: dateToAdd.year(),
+    quarter: dateToAdd.quarter(),
+    month: dateToAdd.format("MM"),
+    day: dateToAdd.date(),
+    hour: dateToAdd.hours(),
+    minute: dateToAdd.minutes(),
+    week: dateToAdd.week(),
+    key: key,
+    question: questionText,
+    type: type,
+    value: String(parsedUserValue),
+    source: "telegram",
+    importedat: moment(ctx.update.message.date * 1000),
+    importid: null
   };
+
+  const keys = Object.keys(row);
+  const reserved = ["key", "type", "value", "year", "month", "day", "hour", "minute"];
+  const quotedKeys = keys.map(k => (reserved.indexOf(k) >= 0 ? '"' + k + '"' : k));
+  const placeholders = keys.map((_, i) => "$" + (i + 1)).join(", ");
 
   postgres.client.query(
     {
       text:
         "INSERT INTO raw_data (" +
-        Object.keys(row).join(",") +
-        ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+        quotedKeys.join(", ") +
+        ") VALUES (" + placeholders + ")",
       values: Object.values(row)
     },
     (err, res) => {
@@ -425,39 +470,37 @@ function insertNewValue(parsedUserValue, ctx, key, type, fakeDate = null) {
   }
 }
 
-function parseUserInput(ctx, text = null) {
-  if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-    console.error("Invalid user " + ctx.update.message.from.username);
-    return;
-  }
+function parseUserInput(ctx: any, text: string | null = null) {
+  const state = getState(ctx);
 
-  if (currentlyAskedQuestionMessageId == null) {
+  if (state.currentlyAskedQuestionMessageId == null) {
     ctx
       .reply(
         "Sorry, I forgot the question I asked, this usually means it took too long for you to respond, please trigger the question again by running the `/` command"
       )
-      .then(({ message_id }) => {
+      .then(() => {
         sendAvailableCommands(ctx);
       });
     return;
   }
 
-  // user replied with a value
-  let userValue;
+  let userValue: string;
   if (text != null) {
     userValue = text;
   } else {
     userValue = ctx.match[1];
   }
 
-  let parsedUserValue = null;
+  let parsedUserValue: any = null;
+  const currentQuestion = state.currentlyAskedQuestionObject;
+  if (!currentQuestion) return;
 
-  if (currentlyAskedQuestionObject.type != "text") {
+  if (currentQuestion.type != "text") {
     // First, see if it starts with emoji number, for which we have to do custom
     // parsing instead
     if (
-      currentlyAskedQuestionObject.type == "range" ||
-      currentlyAskedQuestionObject.type == "boolean"
+      currentQuestion.type == "range" ||
+      currentQuestion.type == "boolean"
     ) {
       let tryToParseNumber = parseInt(userValue[0]);
       if (!isNaN(tryToParseNumber)) {
@@ -486,7 +529,7 @@ function parseUserInput(ctx, text = null) {
     parsedUserValue = userValue; // raw value is fine
   }
 
-  if (currentlyAskedQuestionObject.type == "range") {
+  if (currentQuestion.type == "range") {
     // ensure the input is 0-6
     if (parsedUserValue < 0 || parsedUserValue > 6) {
       ctx.reply(
@@ -498,28 +541,26 @@ function parseUserInput(ctx, text = null) {
   }
 
   if (
-    currentlyAskedQuestionObject.type == "number" ||
-    currentlyAskedQuestionObject.type == "range" ||
-    currentlyAskedQuestionObject.type == "boolean"
+    currentQuestion.type == "number" ||
+    currentQuestion.type == "range" ||
+    currentQuestion.type == "boolean"
   ) {
-    // To show potential streaks and the history
-    printGraph(currentlyAskedQuestionObject.key, ctx, 2, parsedUserValue, true);
+    printGraph(currentQuestion.key, ctx, 2, parsedUserValue, true);
   }
 
   console.log(
     "Got a new value: " +
       parsedUserValue +
       " for question " +
-      currentlyAskedQuestionObject.key
+      currentQuestion.key
   );
 
   if (
-    currentlyAskedQuestionObject.replies &&
-    currentlyAskedQuestionObject.replies[parsedUserValue]
+    currentQuestion.replies &&
+    currentQuestion.replies[parsedUserValue]
   ) {
-    // Check if there is a custom reply, and if, use that
     ctx.reply(
-      currentlyAskedQuestionObject.replies[parsedUserValue],
+      currentQuestion.replies[parsedUserValue],
       Extra.inReplyTo(ctx.update.message.message_id)
     );
   }
@@ -527,8 +568,8 @@ function parseUserInput(ctx, text = null) {
   insertNewValue(
     parsedUserValue,
     ctx,
-    currentlyAskedQuestionObject.key,
-    currentlyAskedQuestionObject.type
+    currentQuestion.key,
+    currentQuestion.type
   );
 
   setTimeout(function() {
@@ -544,19 +585,21 @@ function sendAvailableCommands(ctx) {
   });
 }
 
-function saveLastRun(command) {
+function saveLastRun(ctx: any, command: string) {
+  const userId = ctx.update?.message?.from?.id ?? ctx.from?.id;
+  if (!userId) return;
   postgres.client.query(
     {
       text:
-        "insert into last_run (command, last_run) VALUES ($1, $2) on conflict (command) do update set last_run = $2",
-      values: [command, moment().valueOf()]
+        "INSERT INTO last_run (user_id, command, last_run) VALUES ($1, $2, $3) " +
+        "ON CONFLICT (user_id, command) DO UPDATE SET last_run = $3",
+      values: [userId, command, moment().valueOf()]
     },
-    (err, res) => {
-      console.log(res);
+    (err: Error, res: any) => {
       if (err) {
         console.log(err.stack);
       } else {
-        console.log("Stored timestamp of last run for " + command);
+        console.log("Stored timestamp of last run for " + command + " user " + userId);
       }
     }
   );
@@ -566,25 +609,16 @@ function initBot() {
   console.log("Launching up Telegram bot...");
 
   // parse numeric/text inputs
-  // `^([^\/].*)$` matches everything that doens't start with /
-  // This will enable us to get any user inputs, including longer texts
   bot.hears(/^([^\/].*)$/, ctx => {
+    ensureUserRegistered(ctx);
     parseUserInput(ctx);
   });
-
-  // As we get no benefit of using `bot.command` to add commands, we might as well use
-  // regexes, which then allows us to let the user's JSON define the available commands
 
   //
   // parse one-off commands:
   //
-  // Those have to be above the regex match
   bot.hears("/skip", ctx => {
-    if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-      console.error("Invalid user " + ctx.update.message.from.username);
-      return;
-    }
-
+    ensureUserRegistered(ctx);
     console.log("user is skipping this question");
     ctx.reply(
       "Okay, skipping question. If you see yourself skipping a question too often, maybe it's time to rephrase or remove it"
@@ -593,19 +627,15 @@ function initBot() {
   });
 
   bot.hears("/skip_all", ctx => {
-    if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-      return;
-    }
-    currentlyAskedQuestionQueue = [];
+    ensureUserRegistered(ctx);
+    const state = getState(ctx);
+    state.currentlyAskedQuestionQueue = [];
     triggerNextQuestionFromQueue(ctx);
     ctx.reply("Okay, removing all questions that are currently in the queue");
   });
 
   bot.hears(/\/track (\w+)/, ctx => {
-    if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-      console.error("Invalid user " + ctx.update.message.from.username);
-      return;
-    }
+    ensureUserRegistered(ctx);
 
     let toTrack = ctx.match[1];
     console.log(
@@ -627,7 +657,8 @@ function initBot() {
     });
 
     if (questionToAsk) {
-      currentlyAskedQuestionQueue = currentlyAskedQuestionQueue.concat(
+      const state = getState(ctx);
+      state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(
         questionToAsk
       );
       triggerNextQuestionFromQueue(ctx);
@@ -641,21 +672,16 @@ function initBot() {
   });
 
   bot.hears(/\/graph (\w+)/, ctx => {
-    if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-      return;
-    }
-
+    ensureUserRegistered(ctx);
     let key = ctx.match[1];
     console.log("User wants to graph a specific value " + key);
-
     printGraph(key, ctx, 100, null, false);
   });
 
   bot.on("location", ctx => {
-    if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-      return;
-    }
-    if (currentlyAskedQuestionMessageId == null) {
+    ensureUserRegistered(ctx);
+    const state = getState(ctx);
+    if (state.currentlyAskedQuestionMessageId == null) {
       ctx
         .reply(
           "Sorry, I forgot the question I asked, this usually means it took too long for you to respond, please trigger the question again by running the `/` command"
@@ -676,33 +702,30 @@ function initBot() {
 
   // parse commands to start a survey
   bot.hears(/\/(\w+)/, ctx => {
-    if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-      return;
-    }
+    ensureUserRegistered(ctx);
 
-    // user entered a command to start the survey
     let command = ctx.match[1];
     let matchingCommandObject = config.userConfig[command];
+    const state = getState(ctx);
 
     if (matchingCommandObject && matchingCommandObject.questions) {
       console.log("User wants to run: " + command);
-      saveLastRun(command);
+      saveLastRun(ctx, command);
       if (
-        currentlyAskedQuestionQueue.length > 0 &&
-        currentlyAskedQuestionMessageId
+        state.currentlyAskedQuestionQueue.length > 0 &&
+        state.currentlyAskedQuestionMessageId
       ) {
-        // Happens when the user triggers another survey, without having completed the first one yet
         ctx.reply(
           "^ Okay, but please answer my previous question also, thanks ^",
-          Extra.inReplyTo(currentlyAskedQuestionMessageId)
+          Extra.inReplyTo(state.currentlyAskedQuestionMessageId)
         );
       }
 
-      currentlyAskedQuestionQueue = currentlyAskedQuestionQueue.concat(
+      state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(
         matchingCommandObject.questions.slice(0)
-      ); // slice is a poor human's .clone basically
+      );
 
-      if (currentlyAskedQuestionObject == null) {
+      if (state.currentlyAskedQuestionObject == null) {
         triggerNextQuestionFromQueue(ctx);
       }
     } else {
@@ -714,7 +737,10 @@ function initBot() {
     }
   });
 
-  bot.start(ctx => ctx.reply("Welcome to FxLifeSheet"));
+  bot.start(ctx => {
+    ensureUserRegistered(ctx);
+    ctx.reply("Welcome to LifeSheet! Use / to see available commands.");
+  });
   // bot.on(["voice", "video_note"], ctx => {
   //   if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
   //     return;
