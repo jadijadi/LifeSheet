@@ -1,0 +1,7 @@
+export TELEGRAM_BOT_TOKEN=""
+export TELEGRAM_USER_ID=""
+export TELEGRAM_CHAT_ID=""
+
+export DATABASE_URL=""
+
+export LIFESHEET_JSON_URL=""
