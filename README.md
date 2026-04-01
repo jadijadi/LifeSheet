@@ -1,4 +1,6 @@
-# FxLifeSheet
+# LifeSheet
+
+A multi user expansion of [FxLifeSheet](https://github.com/KrauseFx/FxLifeSheet).
 
 [![Twitter: @KrauseFx](https://img.shields.io/badge/contact-@KrauseFx-blue.svg?style=flat)](https://twitter.com/KrauseFx)
 
