@@ -4,17 +4,17 @@ var needle = require("needle");
 
 // Interfaces
 interface Command {
-  description: String;
-  schedule: String;
+  description: string;
+  schedule: string;
   questions: [QuestionToAsk];
 }
 
 interface QuestionToAsk {
-  key: String;
-  question: String;
-  type: String;
-  buttons: { [key: string]: String };
-  replies: { [key: string]: String };
+  key: string;
+  question: string;
+  type: string;
+  buttons: { [key: string]: string };
+  replies: { [key: string]: string };
 }
 
 let url = process.env.LIFESHEET_JSON_URL;

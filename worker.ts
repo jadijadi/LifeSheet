@@ -523,15 +523,15 @@ function parseUserInput(ctx: any, text: string | null = null) {
 
     if (parsedUserValue == null) {
       // parse the int/float, support both ints and floats
-      userValue = userValue.match(/^(\d+(\.\d+)?)$/);
-      if (userValue == null) {
+      const match = userValue.match(/^(\d+(\.\d+)?)$/);
+      if (match == null) {
         ctx.reply(
           "Sorry, looks like you entered an invalid number, please try again",
           Extra.inReplyTo(ctx.update.message.message_id)
         );
         return;
       }
-      parsedUserValue = userValue[1];
+      parsedUserValue = match[1];
     }
   } else {
     parsedUserValue = userValue; // raw value is fine

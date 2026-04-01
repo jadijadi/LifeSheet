@@ -7,14 +7,48 @@ var config = require("./classes/config.js");
 var postgres = require("./classes/postgres.js");
 var telegram = require("./classes/telegram.js");
 var bot = telegram.bot;
-var currentlyAskedQuestionObject = null;
-var currentlyAskedQuestionMessageId = null;
-var currentlyAskedQuestionQueue = [];
+var userState = new Map();
+function getState(ctx) {
+    var _a, _b, _c, _d, _e;
+    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_e = ctx.from) === null || _e === void 0 ? void 0 : _e.id;
+    if (!userId)
+        throw new Error("No user id in context");
+    var state = userState.get(userId);
+    if (!state) {
+        state = {
+            currentlyAskedQuestionObject: null,
+            currentlyAskedQuestionMessageId: null,
+            currentlyAskedQuestionQueue: []
+        };
+        userState.set(userId, state);
+    }
+    return state;
+}
+function ensureUserRegistered(ctx) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
+    var from = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) !== null && _c !== void 0 ? _c : ctx.from;
+    if (!from)
+        return;
+    var userId = from.id;
+    var chatId = (_g = (_f = (_e = (_d = ctx.update) === null || _d === void 0 ? void 0 : _d.message) === null || _e === void 0 ? void 0 : _e.chat) === null || _f === void 0 ? void 0 : _f.id) !== null && _g !== void 0 ? _g : (_h = ctx.chat) === null || _h === void 0 ? void 0 : _h.id;
+    if (chatId == null)
+        return;
+    var username = (_j = from.username) !== null && _j !== void 0 ? _j : null;
+    console.log("ensureUserRegistered for user", userId, "in chat", chatId, "username", username);
+    postgres.client.query({
+        text: "INSERT INTO users (user_id, chat_id, username, updated_at) VALUES ($1, $2, $3, NOW()) " +
+            "ON CONFLICT (user_id) DO UPDATE SET chat_id = $2, username = $3, updated_at = NOW()",
+        values: [userId, chatId, username]
+    }, function (err) {
+        if (err)
+            console.error("ensureUserRegistered", err);
+    });
+}
 initBot();
 function roundNumberExactly(number, decimals) {
     return (Math.round(number * Math.pow(10, decimals)) / Math.pow(10, decimals)).toFixed(decimals);
 }
-function getButtonText(number) {
+function getButtonText(number, questionObject) {
     var emojiNumber = {
         "0": "0️⃣",
         "1": "1️⃣",
@@ -23,8 +57,8 @@ function getButtonText(number) {
         "4": "4️⃣",
         "5": "5️⃣"
     }[number];
-    if (currentlyAskedQuestionObject.buttons == null) {
-        currentlyAskedQuestionObject.buttons = {
+    if (questionObject.buttons == null) {
+        questionObject.buttons = {
             "0": "Terrible",
             "1": "Bad",
             "2": "Okay",
@@ -33,12 +67,16 @@ function getButtonText(number) {
             "5": "Excellent"
         };
     }
-    return emojiNumber + " " + currentlyAskedQuestionObject.buttons[number];
+    return emojiNumber + " " + questionObject.buttons[number];
 }
 function printGraph(key, ctx, numberOfRecentValuesToPrint, additionalValue, skipImage) {
+    var _a, _b, _c, _d, _e;
+    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_e = ctx.from) === null || _e === void 0 ? void 0 : _e.id;
+    if (!userId)
+        return;
     postgres.client.query({
-        text: "SELECT * FROM raw_data WHERE key = $1 ORDER BY timestamp DESC LIMIT 300",
-        values: [key]
+        text: "SELECT * FROM raw_data WHERE user_id = $1 AND key = $2 ORDER BY timestamp DESC LIMIT 300",
+        values: [userId, key]
     }, function (err, res) {
         if (err) {
             console.error(err);
@@ -77,24 +115,6 @@ function printGraph(key, ctx, numberOfRecentValuesToPrint, additionalValue, skip
         if (numberOfRecentValuesToPrint > 2) {
             ctx.reply(rawText.join("\n") + "\nMinimum: " + minimum + "\nMaximum: " + maximum);
         }
-        // if (!skipImage) {
-        //     minimum -= 2;
-        //     maximum += 2;
-        //     var url = "https://chart.googleapis.com/chart?cht=lc&chd=t:" +
-        //         allValues.join(",") +
-        //         "&chs=800x350&chl=" +
-        //         allTimes.join("%7C") +
-        //         "&chtt=" +
-        //         key +
-        //         "&chf=bg,s,e0e0e0&chco=000000,0000FF&chma=30,30,30,30&chds=" +
-        //         minimum +
-        //         "," +
-        //         maximum;
-        //     console.log(url);
-        //     ctx.replyWithPhoto({
-        //         url: url
-        //     });
-        // }
         if (numberOfRecentValuesToPrint > 0) {
             var queryToUse = "SELECT";
             var weekTimestamp = moment()
@@ -113,31 +133,31 @@ function printGraph(key, ctx, numberOfRecentValuesToPrint, additionalValue, skip
             if (key == "mood") {
                 athTimestamp = moment("2018-02-01").unix() * 1000;
             }
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > " + weekTimestamp + " AND key='" + key + "') as " + key + "Week,";
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > " + monthTimestamp + " AND key='" + key + "') as " + key + "Month,";
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > " + quarterTimestamp + " AND key='" + key + "') as " + key + "Quarter,";
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > " + yearTimestamp + " AND key='" + key + "') as " + key + "Year,";
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > " + athTimestamp + " AND key='" + key + "') as " + key + "AllTime,";
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE id != (SELECT id FROM raw_data WHERE key='" + key + "' ORDER BY id DESC LIMIT 1) AND timestamp > " + weekTimestamp + " AND key='" + key + "') as " + key + "WeekOld,";
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE id != (SELECT id FROM raw_data WHERE key='" + key + "' ORDER BY id DESC LIMIT 1) AND timestamp > " + monthTimestamp + " AND key='" + key + "') as " + key + "MonthOld,";
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE id != (SELECT id FROM raw_data WHERE key='" + key + "' ORDER BY id DESC LIMIT 1) AND timestamp > " + quarterTimestamp + " AND key='" + key + "') as " + key + "QuarterOld,";
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE id != (SELECT id FROM raw_data WHERE key='" + key + "' ORDER BY id DESC LIMIT 1) AND timestamp > " + yearTimestamp + " AND key='" + key + "') as " + key + "YearOld,";
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE id != (SELECT id FROM raw_data WHERE key='" + key + "' ORDER BY id DESC LIMIT 1) AND timestamp > " + athTimestamp + " AND key='" + key + "') as " + key + "AllTimeOld,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND timestamp > " + weekTimestamp + " AND key='" + key + "') as " + key + "Week,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND timestamp > " + monthTimestamp + " AND key='" + key + "') as " + key + "Month,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND timestamp > " + quarterTimestamp + " AND key='" + key + "') as " + key + "Quarter,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND timestamp > " + yearTimestamp + " AND key='" + key + "') as " + key + "Year,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND timestamp > " + athTimestamp + " AND key='" + key + "') as " + key + "AllTime,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND id != (SELECT id FROM raw_data WHERE user_id = " + userId + " AND key='" + key + "' ORDER BY id DESC LIMIT 1) AND timestamp > " + weekTimestamp + " AND key='" + key + "') as " + key + "WeekOld,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND id != (SELECT id FROM raw_data WHERE user_id = " + userId + " AND key='" + key + "' ORDER BY id DESC LIMIT 1) AND timestamp > " + monthTimestamp + " AND key='" + key + "') as " + key + "MonthOld,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND id != (SELECT id FROM raw_data WHERE user_id = " + userId + " AND key='" + key + "' ORDER BY id DESC LIMIT 1) AND timestamp > " + quarterTimestamp + " AND key='" + key + "') as " + key + "QuarterOld,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND id != (SELECT id FROM raw_data WHERE user_id = " + userId + " AND key='" + key + "' ORDER BY id DESC LIMIT 1) AND timestamp > " + yearTimestamp + " AND key='" + key + "') as " + key + "YearOld,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND id != (SELECT id FROM raw_data WHERE user_id = " + userId + " AND key='" + key + "' ORDER BY id DESC LIMIT 1) AND timestamp > " + athTimestamp + " AND key='" + key + "') as " + key + "AllTimeOld,";
             var previousYearStart = moment()
                 .subtract(365 * 2, "days")
                 .unix() * 1000;
             var previousYearEnd = moment()
                 .subtract(365, "days")
                 .unix() * 1000;
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > " + previousYearStart + " AND timestamp < " + previousYearEnd + " AND key='" + key + "') as " + key + "PreviousYear,";
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp < " + previousYearEnd + " AND key='" + key + "') as " + key + "BeforeLastYear,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND timestamp > " + previousYearStart + " AND timestamp < " + previousYearEnd + " AND key='" + key + "') as " + key + "PreviousYear,";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND timestamp < " + previousYearEnd + " AND key='" + key + "') as " + key + "BeforeLastYear,";
             var previousQuarterStart = moment()
                 .subtract(90 * 2, "days")
                 .unix() * 1000;
             var previousQuarterEnd = moment()
                 .subtract(90, "days")
                 .unix() * 1000;
-            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE timestamp > " + previousQuarterStart + " AND timestamp < " + previousQuarterEnd + " AND key='" + key + "') as " + key + "PreviousQuarter";
+            queryToUse += "(SELECT ROUND(AVG(value::numeric), 4) FROM raw_data WHERE user_id = " + userId + " AND timestamp > " + previousQuarterStart + " AND timestamp < " + previousQuarterEnd + " AND key='" + key + "') as " + key + "PreviousQuarter";
             console.log(queryToUse);
             postgres.client.query({
                 text: queryToUse
@@ -192,72 +212,73 @@ function printGraph(key, ctx, numberOfRecentValuesToPrint, additionalValue, skip
     });
 }
 function triggerNextQuestionFromQueue(ctx) {
+    var state = getState(ctx);
     var keyboard = Extra.markup(function (m) { return m.removeKeyboard(); });
     var questionAppendix = "";
-    currentlyAskedQuestionObject = currentlyAskedQuestionQueue.shift();
-    if (currentlyAskedQuestionObject == null) {
+    state.currentlyAskedQuestionObject = state.currentlyAskedQuestionQueue.shift();
+    if (state.currentlyAskedQuestionObject == null) {
         ctx.reply("All done for now, let's do this 💪", keyboard);
         return;
     }
-    if (currentlyAskedQuestionObject.question == null) {
+    var currentQuestion = state.currentlyAskedQuestionObject;
+    if (currentQuestion.question == null) {
         console.error("No text defined for");
-        console.error(currentlyAskedQuestionObject);
+        console.error(currentQuestion);
     }
-    if (currentlyAskedQuestionObject.type == "header") {
+    if (currentQuestion.type == "header") {
         ctx
-            .reply(currentlyAskedQuestionObject.question, keyboard)
-            .then(function (_a) {
-            var message_id = _a.message_id;
+            .reply(currentQuestion.question, keyboard)
+            .then(function () {
             triggerNextQuestionFromQueue(ctx);
         });
         return;
     }
-    if (currentlyAskedQuestionObject.type == "range") {
+    if (currentQuestion.type == "range") {
         var allButtons = [
-            [getButtonText("5")],
-            [getButtonText("4")],
-            [getButtonText("3")],
-            [getButtonText("2")],
-            [getButtonText("1")],
-            [getButtonText("0")]
+            [getButtonText("5", currentQuestion)],
+            [getButtonText("4", currentQuestion)],
+            [getButtonText("3", currentQuestion)],
+            [getButtonText("2", currentQuestion)],
+            [getButtonText("1", currentQuestion)],
+            [getButtonText("0", currentQuestion)]
         ];
         shuffleArray(allButtons);
         keyboard = Markup.keyboard(allButtons)
             .oneTime()
             .extra();
     }
-    else if (currentlyAskedQuestionObject.type == "boolean") {
+    else if (currentQuestion.type == "boolean") {
         keyboard = Markup.keyboard([["1: Yes"], ["0: No"]])
             .oneTime()
             .extra();
     }
-    else if (currentlyAskedQuestionObject.type == "text") {
+    else if (currentQuestion.type == "text") {
         questionAppendix +=
             "You can use a Bear note, and then paste the deep link to the note here";
     }
-    else if (currentlyAskedQuestionObject.type == "location") {
+    else if (currentQuestion.type == "location") {
         keyboard = Extra.markup(function (markup) {
             return markup.keyboard([
                 markup.locationRequestButton("📡 Send location")
             ]);
         });
     }
-    questionAppendix = currentlyAskedQuestionQueue.length + " more question";
-    if (currentlyAskedQuestionQueue.length != 1) {
+    questionAppendix = state.currentlyAskedQuestionQueue.length + " more question";
+    if (state.currentlyAskedQuestionQueue.length != 1) {
         questionAppendix += "s";
     }
-    if (currentlyAskedQuestionQueue.length == 0) {
+    if (state.currentlyAskedQuestionQueue.length == 0) {
         questionAppendix = "last question";
     }
-    var question = currentlyAskedQuestionObject.question + " (" + questionAppendix + ")";
+    var question = currentQuestion.question + " (" + questionAppendix + ")";
     ctx.reply(question, keyboard).then(function (_a) {
         var message_id = _a.message_id;
-        currentlyAskedQuestionMessageId = message_id;
+        state.currentlyAskedQuestionMessageId = message_id;
     });
-    if (currentlyAskedQuestionObject.type == "number" ||
-        currentlyAskedQuestionObject.type == "range" ||
-        currentlyAskedQuestionObject.type == "boolean") {
-        printGraph(currentlyAskedQuestionObject.key, ctx, 0, null, false);
+    if (currentQuestion.type == "number" ||
+        currentQuestion.type == "range" ||
+        currentQuestion.type == "boolean") {
+        printGraph(currentQuestion.key, ctx, 0, null, false);
     }
 }
 function shuffleArray(array) {
@@ -268,8 +289,12 @@ function shuffleArray(array) {
     }
 }
 function insertNewValue(parsedUserValue, ctx, key, type, fakeDate) {
+    var _a, _b, _c, _d, _e;
     if (fakeDate === void 0) { fakeDate = null; }
     console.log("Inserting value '" + parsedUserValue + "' for key " + key);
+    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_e = ctx.from) === null || _e === void 0 ? void 0 : _e.id;
+    if (!userId)
+        return;
     var dateToAdd;
     if (fakeDate) {
         dateToAdd = fakeDate;
@@ -277,33 +302,39 @@ function insertNewValue(parsedUserValue, ctx, key, type, fakeDate) {
     else {
         dateToAdd = moment(ctx.update.message.date * 1000);
     }
+    var state = getState(ctx);
     var questionText = null;
-    if (currentlyAskedQuestionObject) {
-        questionText = currentlyAskedQuestionObject.question;
+    if (state.currentlyAskedQuestionObject) {
+        questionText = state.currentlyAskedQuestionObject.question;
     }
     var row = {
-        Timestamp: dateToAdd.valueOf(),
-        YearMonth: dateToAdd.format("YYYYMM"),
-        YearWeek: dateToAdd.format("YYYYWW"),
-        Year: dateToAdd.year(),
-        Quarter: dateToAdd.quarter(),
-        Month: dateToAdd.format("MM"),
-        Day: dateToAdd.date(),
-        Hour: dateToAdd.hours(),
-        Minute: dateToAdd.minutes(),
-        Week: dateToAdd.week(),
-        Key: key,
-        Question: questionText,
-        Type: type,
-        Value: parsedUserValue,
-        Source: "telegram",
-        Importedat: moment(ctx.update.message.date * 1000),
-        Importid: null
+        user_id: userId,
+        timestamp: dateToAdd.valueOf(),
+        yearmonth: dateToAdd.format("YYYYMM"),
+        yearweek: dateToAdd.format("YYYYWW"),
+        year: dateToAdd.year(),
+        quarter: dateToAdd.quarter(),
+        month: dateToAdd.format("MM"),
+        day: dateToAdd.date(),
+        hour: dateToAdd.hours(),
+        minute: dateToAdd.minutes(),
+        week: dateToAdd.week(),
+        key: key,
+        question: questionText,
+        type: type,
+        value: String(parsedUserValue),
+        source: "telegram",
+        importedat: moment(ctx.update.message.date * 1000),
+        importid: null
     };
+    var keys = Object.keys(row);
+    var reserved = ["key", "type", "value", "year", "month", "day", "hour", "minute"];
+    var quotedKeys = keys.map(function (k) { return (reserved.indexOf(k) >= 0 ? '"' + k + '"' : k); });
+    var placeholders = keys.map(function (_, i) { return "$" + (i + 1); }).join(", ");
     postgres.client.query({
         text: "INSERT INTO raw_data (" +
-            Object.keys(row).join(",") +
-            ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+            quotedKeys.join(", ") +
+            ") VALUES (" + placeholders + ")",
         values: Object.values(row)
     }, function (err, res) {
         if (err) {
@@ -318,15 +349,11 @@ function insertNewValue(parsedUserValue, ctx, key, type, fakeDate) {
 }
 function parseUserInput(ctx, text) {
     if (text === void 0) { text = null; }
-    if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-        console.error("Invalid user " + ctx.update.message.from.username);
-        return;
-    }
-    if (currentlyAskedQuestionMessageId == null) {
+    var state = getState(ctx);
+    if (state.currentlyAskedQuestionMessageId == null) {
         ctx
             .reply("Sorry, I forgot the question I asked, this usually means it took too long for you to respond, please trigger the question again by running the `/` command")
-            .then(function (_a) {
-            var message_id = _a.message_id;
+            .then(function () {
             sendAvailableCommands(ctx);
         });
         return;
@@ -339,9 +366,12 @@ function parseUserInput(ctx, text) {
         userValue = ctx.match[1];
     }
     var parsedUserValue = null;
-    if (currentlyAskedQuestionObject.type != "text") {
-        if (currentlyAskedQuestionObject.type == "range" ||
-            currentlyAskedQuestionObject.type == "boolean") {
+    var currentQuestion = state.currentlyAskedQuestionObject;
+    if (!currentQuestion)
+        return;
+    if (currentQuestion.type != "text") {
+        if (currentQuestion.type == "range" ||
+            currentQuestion.type == "boolean") {
             var tryToParseNumber = parseInt(userValue[0]);
             if (!isNaN(tryToParseNumber)) {
                 parsedUserValue = tryToParseNumber;
@@ -351,37 +381,37 @@ function parseUserInput(ctx, text) {
             }
         }
         if (parsedUserValue == null) {
-            userValue = userValue.match(/^(\d+(\.\d+)?)$/);
-            if (userValue == null) {
+            var match = userValue.match(/^(\d+(\.\d+)?)$/);
+            if (match == null) {
                 ctx.reply("Sorry, looks like you entered an invalid number, please try again", Extra.inReplyTo(ctx.update.message.message_id));
                 return;
             }
-            parsedUserValue = userValue[1];
+            parsedUserValue = match[1];
         }
     }
     else {
         parsedUserValue = userValue;
     }
-    if (currentlyAskedQuestionObject.type == "range") {
+    if (currentQuestion.type == "range") {
         if (parsedUserValue < 0 || parsedUserValue > 6) {
             ctx.reply("Please enter a value from 0 to 6", Extra.inReplyTo(ctx.update.message.message_id));
             return;
         }
     }
-    if (currentlyAskedQuestionObject.type == "number" ||
-        currentlyAskedQuestionObject.type == "range" ||
-        currentlyAskedQuestionObject.type == "boolean") {
-        printGraph(currentlyAskedQuestionObject.key, ctx, 2, parsedUserValue, true);
+    if (currentQuestion.type == "number" ||
+        currentQuestion.type == "range" ||
+        currentQuestion.type == "boolean") {
+        printGraph(currentQuestion.key, ctx, 2, parsedUserValue, true);
     }
     console.log("Got a new value: " +
         parsedUserValue +
         " for question " +
-        currentlyAskedQuestionObject.key);
-    if (currentlyAskedQuestionObject.replies &&
-        currentlyAskedQuestionObject.replies[parsedUserValue]) {
-        ctx.reply(currentlyAskedQuestionObject.replies[parsedUserValue], Extra.inReplyTo(ctx.update.message.message_id));
+        currentQuestion.key);
+    if (currentQuestion.replies &&
+        currentQuestion.replies[parsedUserValue]) {
+        ctx.reply(currentQuestion.replies[parsedUserValue], Extra.inReplyTo(ctx.update.message.message_id));
     }
-    insertNewValue(parsedUserValue, ctx, currentlyAskedQuestionObject.key, currentlyAskedQuestionObject.type);
+    insertNewValue(parsedUserValue, ctx, currentQuestion.key, currentQuestion.type);
     setTimeout(function () {
         triggerNextQuestionFromQueue(ctx);
     }, 50);
@@ -392,47 +422,45 @@ function sendAvailableCommands(ctx) {
         ctx.reply("\n\n/skip\n/report\n\n/" + Object.keys(config.userConfig).join("\n/"));
     });
 }
-function saveLastRun(command) {
+function saveLastRun(ctx, command) {
+    var _a, _b, _c, _d, _e;
+    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_e = ctx.from) === null || _e === void 0 ? void 0 : _e.id;
+    if (!userId)
+        return;
     postgres.client.query({
-        text: "insert into last_run (command, last_run) VALUES ($1, $2) on conflict (command) do update set last_run = $2",
-        values: [command, moment().valueOf()]
+        text: "INSERT INTO last_run (user_id, command, last_run) VALUES ($1, $2, $3) " +
+            "ON CONFLICT (user_id, command) DO UPDATE SET last_run = $3",
+        values: [userId, command, moment().valueOf()]
     }, function (err, res) {
-        console.log(res);
         if (err) {
             console.log(err.stack);
         }
         else {
-            console.log("Stored timestamp of last run for " + command);
+            console.log("Stored timestamp of last run for " + command + " user " + userId);
         }
     });
 }
 function initBot() {
     console.log("Launching up Telegram bot...");
     bot.hears(/^([^\/].*)$/, function (ctx) {
+        ensureUserRegistered(ctx);
         parseUserInput(ctx);
     });
     bot.hears("/skip", function (ctx) {
-        if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-            console.error("Invalid user " + ctx.update.message.from.username);
-            return;
-        }
+        ensureUserRegistered(ctx);
         console.log("user is skipping this question");
         ctx.reply("Okay, skipping question. If you see yourself skipping a question too often, maybe it's time to rephrase or remove it");
         triggerNextQuestionFromQueue(ctx);
     });
     bot.hears("/skip_all", function (ctx) {
-        if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-            return;
-        }
-        currentlyAskedQuestionQueue = [];
+        ensureUserRegistered(ctx);
+        var state = getState(ctx);
+        state.currentlyAskedQuestionQueue = [];
         triggerNextQuestionFromQueue(ctx);
         ctx.reply("Okay, removing all questions that are currently in the queue");
     });
     bot.hears(/\/track (\w+)/, function (ctx) {
-        if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-            console.error("Invalid user " + ctx.update.message.from.username);
-            return;
-        }
+        ensureUserRegistered(ctx);
         var toTrack = ctx.match[1];
         console.log("User wants to track a specific value, without the whole survey: " +
             toTrack);
@@ -448,7 +476,8 @@ function initBot() {
             }
         });
         if (questionToAsk) {
-            currentlyAskedQuestionQueue = currentlyAskedQuestionQueue.concat(questionToAsk);
+            var state = getState(ctx);
+            state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(questionToAsk);
             triggerNextQuestionFromQueue(ctx);
         }
         else {
@@ -458,18 +487,15 @@ function initBot() {
         }
     });
     bot.hears(/\/graph (\w+)/, function (ctx) {
-        if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-            return;
-        }
+        ensureUserRegistered(ctx);
         var key = ctx.match[1];
         console.log("User wants to graph a specific value " + key);
         printGraph(key, ctx, 100, null, false);
     });
     bot.on("location", function (ctx) {
-        if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-            return;
-        }
-        if (currentlyAskedQuestionMessageId == null) {
+        ensureUserRegistered(ctx);
+        var state = getState(ctx);
+        if (state.currentlyAskedQuestionMessageId == null) {
             ctx
                 .reply("Sorry, I forgot the question I asked, this usually means it took too long for you to respond, please trigger the question again by running the `/` command")
                 .then(function (_a) {
@@ -486,20 +512,19 @@ function initBot() {
         triggerNextQuestionFromQueue(ctx);
     });
     bot.hears(/\/(\w+)/, function (ctx) {
-        if (ctx.update.message.from.username != process.env.TELEGRAM_USER_ID) {
-            return;
-        }
+        ensureUserRegistered(ctx);
         var command = ctx.match[1];
         var matchingCommandObject = config.userConfig[command];
+        var state = getState(ctx);
         if (matchingCommandObject && matchingCommandObject.questions) {
             console.log("User wants to run: " + command);
-            saveLastRun(command);
-            if (currentlyAskedQuestionQueue.length > 0 &&
-                currentlyAskedQuestionMessageId) {
-                ctx.reply("^ Okay, but please answer my previous question also, thanks ^", Extra.inReplyTo(currentlyAskedQuestionMessageId));
+            saveLastRun(ctx, command);
+            if (state.currentlyAskedQuestionQueue.length > 0 &&
+                state.currentlyAskedQuestionMessageId) {
+                ctx.reply("^ Okay, but please answer my previous question also, thanks ^", Extra.inReplyTo(state.currentlyAskedQuestionMessageId));
             }
-            currentlyAskedQuestionQueue = currentlyAskedQuestionQueue.concat(matchingCommandObject.questions.slice(0));
-            if (currentlyAskedQuestionObject == null) {
+            state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(matchingCommandObject.questions.slice(0));
+            if (state.currentlyAskedQuestionObject == null) {
                 triggerNextQuestionFromQueue(ctx);
             }
         }
@@ -512,7 +537,10 @@ function initBot() {
             });
         }
     });
-    bot.start(function (ctx) { return ctx.reply("Welcome to FxLifeSheet"); });
+    bot.start(function (ctx) {
+        ensureUserRegistered(ctx);
+        ctx.reply("Welcome to LifeSheet! Use / to see available commands.");
+    });
     bot.help(function (ctx) {
         return ctx.reply("No in-bot help right now, for now please visit https://github.com/KrauseFx/FxLifeSheet");
     });
