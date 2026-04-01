@@ -224,6 +224,12 @@ week - Once per week metrics
 skip_all - Remove all queued questions
 ```
 
+### User records and the `users` table
+
+- Whenever the Telegram bot receives a message, command, or location from a user, it calls an internal `ensureUserRegistered` helper.
+- This helper performs an upsert (`INSERT ... ON CONFLICT DO UPDATE`) into the Postgres `users` table, keyed by Telegram `from.id`.
+- As a result, the `users` table is automatically populated on the very first interaction from each Telegram user and kept up to date on subsequent interactions.
+
 ## Development
 
 ### Running locally

@@ -43,6 +43,14 @@ function ensureUserRegistered(ctx: any): void {
   const chatId = ctx.update?.message?.chat?.id ?? ctx.chat?.id;
   if (chatId == null) return;
   const username = from.username ?? null;
+  console.log(
+    "ensureUserRegistered for user",
+    userId,
+    "in chat",
+    chatId,
+    "username",
+    username
+  );
   postgres.client.query(
     {
       text:
