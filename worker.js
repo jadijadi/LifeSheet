@@ -9,8 +9,8 @@ var telegram = require("./classes/telegram.js");
 var bot = telegram.bot;
 var userState = new Map();
 function getState(ctx) {
-    var _a, _b, _c, _d, _e;
-    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_e = ctx.from) === null || _e === void 0 ? void 0 : _e.id;
+    var _a, _b, _c, _d, _f;
+    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_f = ctx.from) === null || _f === void 0 ? void 0 : _f.id;
     if (!userId)
         throw new Error("No user id in context");
     var state = userState.get(userId);
@@ -25,15 +25,15 @@ function getState(ctx) {
     return state;
 }
 function ensureUserRegistered(ctx) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
+    var _a, _b, _c, _d, _f, _g, _h, _j, _k;
     var from = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) !== null && _c !== void 0 ? _c : ctx.from;
     if (!from)
         return;
     var userId = from.id;
-    var chatId = (_g = (_f = (_e = (_d = ctx.update) === null || _d === void 0 ? void 0 : _d.message) === null || _e === void 0 ? void 0 : _e.chat) === null || _f === void 0 ? void 0 : _f.id) !== null && _g !== void 0 ? _g : (_h = ctx.chat) === null || _h === void 0 ? void 0 : _h.id;
+    var chatId = (_h = (_g = (_f = (_d = ctx.update) === null || _d === void 0 ? void 0 : _d.message) === null || _f === void 0 ? void 0 : _f.chat) === null || _g === void 0 ? void 0 : _g.id) !== null && _h !== void 0 ? _h : (_j = ctx.chat) === null || _j === void 0 ? void 0 : _j.id;
     if (chatId == null)
         return;
-    var username = (_j = from.username) !== null && _j !== void 0 ? _j : null;
+    var username = (_k = from.username) !== null && _k !== void 0 ? _k : null;
     console.log("ensureUserRegistered for user", userId, "in chat", chatId, "username", username);
     postgres.client.query({
         text: "INSERT INTO users (user_id, chat_id, username, updated_at) VALUES ($1, $2, $3, NOW()) " +
@@ -42,6 +42,29 @@ function ensureUserRegistered(ctx) {
     }, function (err) {
         if (err)
             console.error("ensureUserRegistered", err);
+    });
+}
+function fetchUserQuestionCommands(userId, cb) {
+    postgres.client.query({
+        text: "SELECT preferred_question_list, preferred_question_yaml_url FROM users WHERE user_id = $1",
+        values: [userId]
+    }, function (err, res) {
+        if (err) {
+            cb(err, null);
+            return;
+        }
+        var row = res.rows[0];
+        var listId = null;
+        var yamlUrl = null;
+        if (row) {
+            var pl = row.preferred_question_list;
+            listId = pl == null || pl === "" ? null : String(pl);
+            var yu = row.preferred_question_yaml_url;
+            yamlUrl = yu == null || yu === "" ? null : String(yu);
+        }
+        config.resolveQuestionCommands(listId, yamlUrl, function (_e, cmds) {
+            cb(null, cmds);
+        });
     });
 }
 initBot();
@@ -70,8 +93,8 @@ function getButtonText(number, questionObject) {
     return emojiNumber + " " + questionObject.buttons[number];
 }
 function printGraph(key, ctx, numberOfRecentValuesToPrint, additionalValue, skipImage) {
-    var _a, _b, _c, _d, _e;
-    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_e = ctx.from) === null || _e === void 0 ? void 0 : _e.id;
+    var _a, _b, _c, _d, _f;
+    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_f = ctx.from) === null || _f === void 0 ? void 0 : _f.id;
     if (!userId)
         return;
     postgres.client.query({
@@ -289,10 +312,10 @@ function shuffleArray(array) {
     }
 }
 function insertNewValue(parsedUserValue, ctx, key, type, fakeDate) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _f;
     if (fakeDate === void 0) { fakeDate = null; }
     console.log("Inserting value '" + parsedUserValue + "' for key " + key);
-    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_e = ctx.from) === null || _e === void 0 ? void 0 : _e.id;
+    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_f = ctx.from) === null || _f === void 0 ? void 0 : _f.id;
     if (!userId)
         return;
     var dateToAdd;
@@ -417,14 +440,24 @@ function parseUserInput(ctx, text) {
     }, 50);
 }
 function sendAvailableCommands(ctx) {
-    ctx.reply("Available commands:").then(function (_a) {
-        var message_id = _a.message_id;
-        ctx.reply("\n\n/skip\n/report\n\n/" + Object.keys(config.userConfig).join("\n/"));
+    var _a, _b, _c, _d, _f;
+    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_f = ctx.from) === null || _f === void 0 ? void 0 : _f.id;
+    var replyKeys = function (cmds) {
+        ctx.reply("Available commands:").then(function () {
+            ctx.reply("\n\n/skip\n/report\n\n/" + Object.keys(cmds).join("\n/"));
+        });
+    };
+    if (!userId) {
+        replyKeys(config.getCommandsForList(null));
+        return;
+    }
+    fetchUserQuestionCommands(userId, function (err, cmds) {
+        replyKeys(err ? config.getCommandsForList(null) : cmds);
     });
 }
 function saveLastRun(ctx, command) {
-    var _a, _b, _c, _d, _e;
-    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_e = ctx.from) === null || _e === void 0 ? void 0 : _e.id;
+    var _a, _b, _c, _d, _f;
+    var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_f = ctx.from) === null || _f === void 0 ? void 0 : _f.id;
     if (!userId)
         return;
     postgres.client.query({
@@ -460,31 +493,42 @@ function initBot() {
         ctx.reply("Okay, removing all questions that are currently in the queue");
     });
     bot.hears(/\/track (\w+)/, function (ctx) {
+        var _a, _b, _c, _d, _f;
         ensureUserRegistered(ctx);
         var toTrack = ctx.match[1];
         console.log("User wants to track a specific value, without the whole survey: " +
             toTrack);
-        var questionToAsk = null;
-        Object.keys(config.userConfig).forEach(function (key) {
-            var survey = config.userConfig[key];
-            for (var i = 0; i < survey.questions.length; i++) {
-                var currentQuestion = survey.questions[i];
-                if (currentQuestion.key == toTrack) {
-                    questionToAsk = currentQuestion;
-                    return;
+        var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_f = ctx.from) === null || _f === void 0 ? void 0 : _f.id;
+        var runTrack = function (cmds) {
+            var questionToAsk = null;
+            Object.keys(cmds).forEach(function (key) {
+                var survey = cmds[key];
+                for (var i = 0; i < survey.questions.length; i++) {
+                    var currentQuestion = survey.questions[i];
+                    if (currentQuestion.key == toTrack) {
+                        questionToAsk = currentQuestion;
+                        return;
+                    }
                 }
+            });
+            if (questionToAsk) {
+                var state = getState(ctx);
+                state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(questionToAsk);
+                triggerNextQuestionFromQueue(ctx);
             }
+            else {
+                ctx.reply("Sorry, I couldn't find the key `" +
+                    toTrack +
+                    "`, please make sure it's not mispelled");
+            }
+        };
+        if (!userId) {
+            runTrack(config.getCommandsForList(null));
+            return;
+        }
+        fetchUserQuestionCommands(userId, function (err, cmds) {
+            runTrack(err ? config.getCommandsForList(null) : cmds);
         });
-        if (questionToAsk) {
-            var state = getState(ctx);
-            state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(questionToAsk);
-            triggerNextQuestionFromQueue(ctx);
-        }
-        else {
-            ctx.reply("Sorry, I couldn't find the key `" +
-                toTrack +
-                "`, please make sure it's not mispelled");
-        }
     });
     bot.hears(/\/graph (\w+)/, function (ctx) {
         ensureUserRegistered(ctx);
@@ -512,30 +556,40 @@ function initBot() {
         triggerNextQuestionFromQueue(ctx);
     });
     bot.hears(/\/(\w+)/, function (ctx) {
+        var _a, _b, _c, _d, _f;
         ensureUserRegistered(ctx);
         var command = ctx.match[1];
-        var matchingCommandObject = config.userConfig[command];
+        var userId = (_d = (_c = (_b = (_a = ctx.update) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.from) === null || _c === void 0 ? void 0 : _c.id) !== null && _d !== void 0 ? _d : (_f = ctx.from) === null || _f === void 0 ? void 0 : _f.id;
         var state = getState(ctx);
-        if (matchingCommandObject && matchingCommandObject.questions) {
-            console.log("User wants to run: " + command);
-            saveLastRun(ctx, command);
-            if (state.currentlyAskedQuestionQueue.length > 0 &&
-                state.currentlyAskedQuestionMessageId) {
-                ctx.reply("^ Okay, but please answer my previous question also, thanks ^", Extra.inReplyTo(state.currentlyAskedQuestionMessageId));
+        var runSurveyCommand = function (cmds) {
+            var matchingCommandObject = cmds[command];
+            if (matchingCommandObject && matchingCommandObject.questions) {
+                console.log("User wants to run: " + command);
+                saveLastRun(ctx, command);
+                if (state.currentlyAskedQuestionQueue.length > 0 &&
+                    state.currentlyAskedQuestionMessageId) {
+                    ctx.reply("^ Okay, but please answer my previous question also, thanks ^", Extra.inReplyTo(state.currentlyAskedQuestionMessageId));
+                }
+                state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(matchingCommandObject.questions.slice(0));
+                if (state.currentlyAskedQuestionObject == null) {
+                    triggerNextQuestionFromQueue(ctx);
+                }
             }
-            state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(matchingCommandObject.questions.slice(0));
-            if (state.currentlyAskedQuestionObject == null) {
-                triggerNextQuestionFromQueue(ctx);
+            else {
+                ctx
+                    .reply("Sorry, I don't know how to run `/" + command)
+                    .then(function () {
+                    sendAvailableCommands(ctx);
+                });
             }
+        };
+        if (!userId) {
+            runSurveyCommand(config.getCommandsForList(null));
+            return;
         }
-        else {
-            ctx
-                .reply("Sorry, I don't know how to run `/" + command)
-                .then(function (_a) {
-                var message_id = _a.message_id;
-                sendAvailableCommands(ctx);
-            });
-        }
+        fetchUserQuestionCommands(userId, function (err, cmds) {
+            runSurveyCommand(err ? config.getCommandsForList(null) : cmds);
+        });
     });
     bot.start(function (ctx) {
         ensureUserRegistered(ctx);

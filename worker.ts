@@ -64,6 +64,37 @@ function ensureUserRegistered(ctx: any): void {
   );
 }
 
+function fetchUserQuestionCommands(
+  userId: number,
+  cb: (err: Error | null, cmds: { [key: string]: Command } | null) => void
+): void {
+  postgres.client.query(
+    {
+      text:
+        "SELECT preferred_question_list, preferred_question_yaml_url FROM users WHERE user_id = $1",
+      values: [userId]
+    },
+    (err: Error, res: any) => {
+      if (err) {
+        cb(err, null);
+        return;
+      }
+      const row = res.rows[0];
+      let listId: string | null = null;
+      let yamlUrl: string | null = null;
+      if (row) {
+        const pl = row.preferred_question_list;
+        listId = pl == null || pl === "" ? null : String(pl);
+        const yu = row.preferred_question_yaml_url;
+        yamlUrl = yu == null || yu === "" ? null : String(yu);
+      }
+      (config as any).resolveQuestionCommands(listId, yamlUrl, (_e: Error, cmds: any) => {
+        cb(null, cmds);
+      });
+    }
+  );
+}
+
 initBot();
 
 function roundNumberExactly(number, decimals) {
@@ -585,11 +616,19 @@ function parseUserInput(ctx: any, text: string | null = null) {
   }, 50); // timeout just to make sure the order is right
 }
 
-function sendAvailableCommands(ctx) {
-  ctx.reply("Available commands:").then(({ message_id }) => {
-    ctx.reply(
-      "\n\n/skip\n/report\n\n/" + Object.keys(config.userConfig).join("\n/")
-    );
+function sendAvailableCommands(ctx: any) {
+  const userId = ctx.update?.message?.from?.id ?? ctx.from?.id;
+  const replyKeys = (cmds: { [key: string]: Command }) => {
+    ctx.reply("Available commands:").then(() => {
+      ctx.reply("\n\n/skip\n/report\n\n/" + Object.keys(cmds).join("\n/"));
+    });
+  };
+  if (!userId) {
+    replyKeys((config as any).getCommandsForList(null));
+    return;
+  }
+  fetchUserQuestionCommands(userId, (err, cmds) => {
+    replyKeys(err ? (config as any).getCommandsForList(null) : cmds);
   });
 }
 
@@ -651,32 +690,40 @@ function initBot() {
         toTrack
     );
 
-    let questionToAsk: QuestionToAsk = null;
-
-    Object.keys(config.userConfig).forEach(function(key) {
-      var survey = config.userConfig[key];
-      for (let i = 0; i < survey.questions.length; i++) {
-        let currentQuestion = survey.questions[i];
-        if (currentQuestion.key == toTrack) {
-          questionToAsk = currentQuestion;
-          return;
+    const userId = ctx.update?.message?.from?.id ?? ctx.from?.id;
+    const runTrack = (cmds: { [key: string]: Command }) => {
+      let questionToAsk: QuestionToAsk = null;
+      Object.keys(cmds).forEach(function(key) {
+        var survey = cmds[key];
+        for (let i = 0; i < survey.questions.length; i++) {
+          let currentQuestion = survey.questions[i];
+          if (currentQuestion.key == toTrack) {
+            questionToAsk = currentQuestion;
+            return;
+          }
         }
+      });
+      if (questionToAsk) {
+        const state = getState(ctx);
+        state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(
+          questionToAsk
+        );
+        triggerNextQuestionFromQueue(ctx);
+      } else {
+        ctx.reply(
+          "Sorry, I couldn't find the key `" +
+            toTrack +
+            "`, please make sure it's not mispelled"
+        );
       }
-    });
-
-    if (questionToAsk) {
-      const state = getState(ctx);
-      state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(
-        questionToAsk
-      );
-      triggerNextQuestionFromQueue(ctx);
-    } else {
-      ctx.reply(
-        "Sorry, I couldn't find the key `" +
-          toTrack +
-          "`, please make sure it's not mispelled"
-      );
+    };
+    if (!userId) {
+      runTrack((config as any).getCommandsForList(null));
+      return;
     }
+    fetchUserQuestionCommands(userId, (err, cmds) => {
+      runTrack(err ? (config as any).getCommandsForList(null) : cmds);
+    });
   });
 
   bot.hears(/\/graph (\w+)/, ctx => {
@@ -713,36 +760,45 @@ function initBot() {
     ensureUserRegistered(ctx);
 
     let command = ctx.match[1];
-    let matchingCommandObject = config.userConfig[command];
+    const userId = ctx.update?.message?.from?.id ?? ctx.from?.id;
     const state = getState(ctx);
+    const runSurveyCommand = (cmds: { [key: string]: Command }) => {
+      let matchingCommandObject = cmds[command];
+      if (matchingCommandObject && matchingCommandObject.questions) {
+        console.log("User wants to run: " + command);
+        saveLastRun(ctx, command);
+        if (
+          state.currentlyAskedQuestionQueue.length > 0 &&
+          state.currentlyAskedQuestionMessageId
+        ) {
+          ctx.reply(
+            "^ Okay, but please answer my previous question also, thanks ^",
+            Extra.inReplyTo(state.currentlyAskedQuestionMessageId)
+          );
+        }
 
-    if (matchingCommandObject && matchingCommandObject.questions) {
-      console.log("User wants to run: " + command);
-      saveLastRun(ctx, command);
-      if (
-        state.currentlyAskedQuestionQueue.length > 0 &&
-        state.currentlyAskedQuestionMessageId
-      ) {
-        ctx.reply(
-          "^ Okay, but please answer my previous question also, thanks ^",
-          Extra.inReplyTo(state.currentlyAskedQuestionMessageId)
+        state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(
+          matchingCommandObject.questions.slice(0)
         );
-      }
 
-      state.currentlyAskedQuestionQueue = state.currentlyAskedQuestionQueue.concat(
-        matchingCommandObject.questions.slice(0)
-      );
-
-      if (state.currentlyAskedQuestionObject == null) {
-        triggerNextQuestionFromQueue(ctx);
+        if (state.currentlyAskedQuestionObject == null) {
+          triggerNextQuestionFromQueue(ctx);
+        }
+      } else {
+        ctx
+          .reply("Sorry, I don't know how to run `/" + command)
+          .then(() => {
+            sendAvailableCommands(ctx);
+          });
       }
-    } else {
-      ctx
-        .reply("Sorry, I don't know how to run `/" + command)
-        .then(({ message_id }) => {
-          sendAvailableCommands(ctx);
-        });
+    };
+    if (!userId) {
+      runSurveyCommand((config as any).getCommandsForList(null));
+      return;
     }
+    fetchUserQuestionCommands(userId, (err, cmds) => {
+      runSurveyCommand(err ? (config as any).getCommandsForList(null) : cmds);
+    });
   });
 
   bot.start(ctx => {

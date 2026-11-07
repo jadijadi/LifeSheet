@@ -8,7 +8,9 @@ CREATE TABLE users (
     chat_id BIGINT NOT NULL,
     username TEXT,
     first_seen_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    preferred_question_list TEXT,
+    preferred_question_yaml_url TEXT
 );
 
 -- Table Definition ----------------------------------------------

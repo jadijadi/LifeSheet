@@ -8,6 +8,7 @@
         "scheduler": "node scheduler.js"
     },
     "dependencies": {
+        "js-yaml": "^4.1.1",
         "moment": "^2.24.0",
         "needle": "^2.3.3",
         "node-cron": "^3.0.2",
