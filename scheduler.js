@@ -94,7 +94,9 @@ cron.schedule(`0 * * * *`, async () => {
                 " again, it's been " +
                 timeDifferenceHours +
                 " hours since you last filled it out";
-              telegram.bot.telegram.sendMessage(chatId, textToSend);
+              telegram.bot.telegram.sendMessage(chatId, textToSend).catch(function(err) {
+                console.error("Failed to send reminder to " + chatId, err);
+              });
               postgres.client.query(
                 {
                   text:

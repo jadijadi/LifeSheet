@@ -860,6 +860,21 @@ function initBot() {
 
   // has to be last
   bot.launch();
+
+  // Telegraf stops polling for good on some errors (e.g. 409 Conflict while
+  // another instance briefly polls during a deploy). Restart it if so.
+  setInterval(() => {
+    if (!bot.polling.started) {
+      console.error("Telegram polling had stopped, restarting it");
+      bot.startPolling();
+    }
+  }, 60 * 1000);
 }
+
+// Many ctx.reply()/telegram calls aren't awaited; if one fails because of a
+// network error, Node would otherwise crash the whole bot.
+process.on("unhandledRejection", (reason: any) => {
+  console.error("Unhandled promise rejection", reason);
+});
 
 export {};

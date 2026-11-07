@@ -601,5 +601,14 @@ function initBot() {
     bot.on("sticker", function (ctx) { return ctx.reply("Sorry, I don't support stickers"); });
     bot.hears("hi", function (ctx) { return ctx.reply("Hey there"); });
     bot.launch();
+    setInterval(function () {
+        if (!bot.polling.started) {
+            console.error("Telegram polling had stopped, restarting it");
+            bot.startPolling();
+        }
+    }, 60 * 1000);
 }
+process.on("unhandledRejection", function (reason) {
+    console.error("Unhandled promise rejection", reason);
+});
 //# sourceMappingURL=worker.js.map
